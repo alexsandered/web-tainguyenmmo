@@ -9,6 +9,16 @@ import crypto from 'crypto';
 const app = express();
 app.use(express.json());
 
+// --- LÁ CHẮN CHỐNG CACHE VĨNH VIỄN ---
+// Ngăn không cho trình duyệt tự ý lưu cache (Ngăn chặn triệt để lỗi 304)
+app.use("/api", (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+  next();
+});
+
 // --- MONGODB CONNECTION ---
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/digihub";
 
@@ -16,7 +26,7 @@ mongoose.connect(MONGODB_URI)
   .then(() => console.log("✅ Kết nối MongoDB thành công!"))
   .catch(err => console.error("❌ Lỗi kết nối MongoDB:", err));
 
-// --- MONGOOSE SCHEMAS & MODELS (Chuẩn hóa ngôn ngữ Frontend) ---
+// --- MONGOOSE SCHEMAS (Chuẩn hóa tên cột 100% như cũ) ---
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
   email: { type: String, required: true, unique: true },
@@ -59,61 +69,13 @@ const orderSchema = new mongoose.Schema({
 });
 const Order = mongoose.model("Order", orderSchema);
 
-// Bộ dịch thuật: Biến _id của MongoDB thành id cho Frontend hiểu
+// --- BỘ DỊCH THUẬT: ÉP KIỂU ID SANG CHUỖI THUẦN TÚY ---
 const formatDoc = (doc: any) => {
   if (!doc) return null;
   const obj = doc.toObject ? doc.toObject() : doc;
-  obj.id = obj._id;
+  obj.id = obj._id ? obj._id.toString() : ""; 
   return obj;
 };
-
-// --- SEED DATA ---
-async function seedData() {
-  const count = await User.countDocuments();
-  if (count === 0) {
-    console.log("Đang khởi tạo dữ liệu mẫu...");
-    const hashedPassword = await bcrypt.hash('password123', 10);
-    await User.create({ username: "demo_user", email: "demo@example.com", password: hashedPassword, balance: 1000000, role: "admin" });
-
-    const productsData = [
-      { name: "Supper Grok Acc Cấp 1 Tháng", base_price: 240000, warranty_type: "BHF", keywords: "Grok, AI Tools" },
-      { name: "Supper Grok Active Chính Chủ 1 Tháng", base_price: 265000, warranty_type: "BHF", keywords: "Grok, AI Tools" },
-      { name: "Code Perplexity Pro 1 Năm (KBH)", base_price: 84000, warranty_type: "KBH", keywords: "Perplexity, AI Tools" },
-      { name: "Chat GPT Plus 1 Tháng (KBH)", base_price: 20000, warranty_type: "KBH", keywords: "ChatGPT, AI Tools" },
-      { name: "CapCut Pro 35 Ngày", base_price: 16000, warranty_type: "BHF", keywords: "CapCut, Design & Video" },
-      { name: "Canva Pro Chính Chủ 1 Tháng", base_price: 26000, warranty_type: "BHF", keywords: "Canva, Design & Video" },
-      { name: "YouTube Premium 1 Tháng", base_price: 52000, warranty_type: "BHF", keywords: "YouTube, Entertainment" },
-      { name: "Netflix Slot Riêng 1 Tháng", base_price: 101000, warranty_type: "BHF", keywords: "Netflix, Entertainment" },
-      { name: "Nord VPN 1 Năm 1 Thiết Bị", base_price: 156000, warranty_type: "BHF", keywords: "Nord, VPN & Proxy" },
-      { name: "Gmail New Trắng (Ngâm 8-9 Ngày)", base_price: 20000, warranty_type: "BHF", keywords: "Gmail, Marketing & Social" },
-      { name: "TikTok Việt Ngâm 2000-2500 Follow", base_price: 132000, warranty_type: "BHF", keywords: "TikTok, Marketing & Social" }
-    ];
-
-    const insertedProducts = await Product.insertMany(productsData);
-    
-    const inventoryItems = [];
-    for (let p of insertedProducts) {
-      for (let j = 0; j < 5; j++) {
-        inventoryItems.push({ product_id: p._id, data: `account_${p._id.toString().substring(0,4)}_${j}@example.com|password123` });
-      }
-    }
-    await Inventory.insertMany(inventoryItems);
-  }
-}
-seedData();
-
-// --- SSE Setup ---
-const sseEmitter = new EventEmitter();
-app.get("/api/sse/:userId", (req, res) => {
-  const userId = req.params.userId;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  const listener = (data: any) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-  sseEmitter.on(`user_${userId}`, listener);
-  req.on("close", () => sseEmitter.off(`user_${userId}`, listener));
-});
 
 // --- API ROUTES ---
 app.post("/api/auth/register", async (req, res) => {
@@ -143,25 +105,54 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.get("/api/user", async (req, res) => {
-  const user = await User.findOne({ username: "demo_user" }).select("-password");
-  res.json(formatDoc(user));
+  try {
+    // Luôn trả về user mới nhất vừa được đăng ký để chống kẹt phiên
+    const user = await User.findOne().sort({ created_at: -1 }).select("-password");
+    res.json(formatDoc(user));
+  } catch (err) {
+    res.json(null);
+  }
 });
 
 app.get("/api/products", async (req, res) => {
-  const products = await Product.aggregate([
-    {
-      $lookup: {
-        from: "inventories",
-        localField: "_id",
-        foreignField: "product_id",
-        pipeline: [{ $match: { is_used: false } }],
-        as: "stockItems"
-      }
-    },
-    { $addFields: { stock: { $size: "$stockItems" }, id: "$_id" } },
-    { $project: { stockItems: 0 } }
-  ]);
-  res.json(products);
+  try {
+    const products = await Product.aggregate([
+      {
+        $lookup: {
+          from: "inventories",
+          localField: "_id",
+          foreignField: "product_id",
+          pipeline: [{ $match: { is_used: false } }],
+          as: "stockItems"
+        }
+      },
+      { $addFields: { stock: { $size: "$stockItems" } } },
+      { $project: { stockItems: 0 } }
+    ]);
+    
+    // Ép toàn bộ mảng ID sản phẩm sang chuỗi thuần túy
+    const formattedProducts = products.map(p => ({
+      ...p,
+      id: p._id.toString()
+    }));
+    
+    res.json(formattedProducts);
+  } catch (err) {
+    res.json([]);
+  }
+});
+
+// --- SSE Setup ---
+const sseEmitter = new EventEmitter();
+app.get("/api/sse/:userId", (req, res) => {
+  const userId = req.params.userId;
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  const listener = (data: any) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  sseEmitter.on(`user_${userId}`, listener);
+  req.on("close", () => sseEmitter.off(`user_${userId}`, listener));
 });
 
 app.post("/api/orders", async (req, res) => {
@@ -196,7 +187,7 @@ app.get("/api/orders/:userId", async (req, res) => {
   const orders = await Order.find({ user_id: req.params.userId }).populate("product_id", "name").sort({ created_at: -1 }).lean();
   const formattedOrders = orders.map(o => ({
     ...o,
-    id: o._id,
+    id: o._id.toString(),
     product_name: (o.product_id as any)?.name
   }));
   res.json(formattedOrders);
