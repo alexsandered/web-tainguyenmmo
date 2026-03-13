@@ -9,7 +9,7 @@ import crypto from 'crypto';
 const app = express();
 app.use(express.json());
 
-// --- LÁ CHẮN CHỐNG CACHE VĨNH VIỄN ---
+// --- LÁ CHẮN CHỐNG CACHE ---
 app.use("/api", (req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
@@ -75,14 +75,12 @@ const formatDoc = (doc: any) => {
   return obj;
 };
 
-// --- SEED DATA (SỬA LỖI Ở ĐÂY) ---
+// --- HÀM NẠP DỮ LIỆU ĐƯỢC ÉP CHẠY ĐỒNG BỘ ---
 async function seedData() {
-  // Kiểm tra xem SẢN PHẨM có bằng 0 không, thay vì kiểm tra User
   const productCount = await Product.countDocuments();
   if (productCount === 0) {
-    console.log("Đang khởi tạo dữ liệu mẫu...");
+    console.log("Kho trống! Bắt đầu nạp 50 sản phẩm mẫu vào DB...");
     
-    // Khởi tạo user Admin nếu chưa có
     const userCount = await User.countDocuments();
     if (userCount === 0) {
         const hashedPassword = await bcrypt.hash('password123', 10);
@@ -108,13 +106,13 @@ async function seedData() {
     const inventoryItems = [];
     for (let p of insertedProducts) {
       for (let j = 0; j < 5; j++) {
-        inventoryItems.push({ product_id: p._id, data: `account_${p._id.toString().substring(0,4)}_${j}@example.com|password123` });
+        inventoryItems.push({ product_id: p._id, data: `account_${p._id.toString().substring(0,4)}_${j}@example.com|password123`, is_used: false });
       }
     }
     await Inventory.insertMany(inventoryItems);
+    console.log("Đã nạp xong thành công!");
   }
 }
-seedData();
 
 // --- SSE Setup ---
 const sseEmitter = new EventEmitter();
@@ -167,6 +165,9 @@ app.get("/api/user", async (req, res) => {
 
 app.get("/api/products", async (req, res) => {
   try {
+    // ÉP VERCEL ĐỨNG ĐỢI NẠP XONG SẢN PHẨM MỚI ĐƯỢC CHẠY TIẾP
+    await seedData(); 
+
     const products = await Product.aggregate([
       {
         $lookup: {
@@ -188,6 +189,7 @@ app.get("/api/products", async (req, res) => {
     
     res.json(formattedProducts);
   } catch (err) {
+    console.error("Lỗi lấy sản phẩm:", err);
     res.json([]);
   }
 });
