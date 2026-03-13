@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import mongoose from "mongoose";
 import { EventEmitter } from "events";
@@ -338,6 +337,8 @@ app.get("/api/orders/:userId", async (req, res) => {
 // --- VITE CẤU HÌNH (Chỉ chạy ở môi trường DEV) ---
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    // Chỉ gọi Vite khi chạy ở máy tính (dev), giấu hoàn toàn khỏi Vercel
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
     const PORT = process.env.PORT || 3000;
