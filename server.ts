@@ -155,8 +155,14 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.get("/api/user", async (req, res) => {
-  // Trả về null để khóa giả lập. Frontend sẽ tự dùng dữ liệu từ lúc Login chuẩn.
-  res.json(null); 
+  // Trả về một tài khoản Khách cấp độ thấp nhất để Giao diện không bị sốc và treo Loading
+  res.json({ 
+    id: "guest_123", 
+    username: "Khách", 
+    email: "khach@gmail.com", 
+    role: "user", 
+    balance: 0 
+  });
 });
 
 app.get("/api/products", async (req, res) => {
