@@ -1,156 +1,161 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import Database from "better-sqlite3";
+import mongoose from "mongoose";
 import { EventEmitter } from "events";
+import bcrypt from 'bcrypt';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 
 const app = express();
-const PORT = 3000;
-
 app.use(express.json());
 
-// --- Database Setup (SQLite) ---
-const db = new Database("database.sqlite", { verbose: console.log });
+// --- MONGODB CONNECTION ---
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/digihub";
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    email TEXT UNIQUE,
-    password TEXT,
-    balance INTEGER DEFAULT 0
-  );
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log("✅ Kết nối MongoDB thành công!"))
+  .catch(err => console.error("❌ Lỗi kết nối MongoDB:", err));
 
-  CREATE TABLE IF NOT EXISTS otps (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    otp TEXT,
-    expires_at DATETIME,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  );
+// --- MONGOOSE SCHEMAS & MODELS ---
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  balance: { type: Number, default: 0 },
+  role: { type: String, default: "user" },
+  createdAt: { type: Date, default: Date.now }
+});
+const User = mongoose.model("User", userSchema);
 
-  CREATE TABLE IF NOT EXISTS products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    base_price INTEGER,
-    warranty_type TEXT,
-    keywords TEXT
-  );
+const otpSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  otp: String,
+  expiresAt: Date
+});
+const Otp = mongoose.model("Otp", otpSchema);
 
-  CREATE TABLE IF NOT EXISTS inventory (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_id INTEGER,
-    data TEXT,
-    is_used BOOLEAN DEFAULT 0,
-    FOREIGN KEY(product_id) REFERENCES products(id)
-  );
+const productSchema = new mongoose.Schema({
+  name: String,
+  basePrice: Number,
+  warrantyType: String,
+  keywords: String
+});
+const Product = mongoose.model("Product", productSchema);
 
-  CREATE TABLE IF NOT EXISTS orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    product_id INTEGER,
-    status TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    completed_at DATETIME,
-    delivered_data TEXT,
-    FOREIGN KEY(user_id) REFERENCES users(id),
-    FOREIGN KEY(product_id) REFERENCES products(id)
-  );
-`);
+const inventorySchema = new mongoose.Schema({
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+  data: String,
+  isUsed: { type: Boolean, default: false }
+});
+const Inventory = mongoose.model("Inventory", inventorySchema);
 
-// Seed initial data if empty
-const userCount = db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number };
-if (userCount.count === 0) {
-  const bcrypt = await import('bcrypt');
-  const hashedPassword = await bcrypt.hash('password123', 10);
-  db.prepare("INSERT INTO users (username, email, password, balance) VALUES (?, ?, ?, ?)").run("demo_user", "demo@example.com", hashedPassword, 1000000);
-  
-  const insertProduct = db.prepare("INSERT INTO products (name, base_price, warranty_type, keywords) VALUES (?, ?, ?, ?)");
-  
-  // AI Tools
-  insertProduct.run("Supper Grok Acc Cấp 1 Tháng", 240000, "BHF", "Grok, AI Tools");
-  insertProduct.run("Supper Grok Active Chính Chủ 1 Tháng", 265000, "BHF", "Grok, AI Tools");
-  insertProduct.run("Code Perplexity Pro 1 Năm (KBH)", 84000, "KBH", "Perplexity, AI Tools");
-  insertProduct.run("Acc Perplexity Pro 1 Năm (KBH)", 96000, "KBH", "Perplexity, AI Tools");
-  insertProduct.run("Gemini Pro & Veo 3 1 Năm (Kèm Drive 2TB - KBH)", 84000, "KBH", "Gemini, Veo3, AI Tools");
-  insertProduct.run("Chat GPT Plus 1 Tháng (KBH)", 20000, "KBH", "ChatGPT, AI Tools");
-  insertProduct.run("Slot Add GPT Team 1 Tháng (KBH)", 39000, "KBH", "ChatGPT, AI Tools");
-  insertProduct.run("Chat GPT Plus Acc Cấp 1 Tháng (BHF)", 60000, "BHF", "ChatGPT, AI Tools");
-  insertProduct.run("Chat GPT Plus Dịch Vụ Pay Lại Acc Cũ 1 Tháng (KBH)", 72000, "KBH", "ChatGPT, AI Tools");
-  insertProduct.run("Chat GPT Plus Dịch Vụ Pay Lại Acc Cũ 1 Tháng (BHF)", 192000, "BHF", "ChatGPT, AI Tools");
-  insertProduct.run("Chat GPT Go 12 Tháng (Chính Chủ - KBH)", 156000, "KBH", "ChatGPT, AI Tools");
-  insertProduct.run("Kling AI 1100 Credit (KBH)", 120000, "KBH", "Kling, AI Tools");
-  insertProduct.run("Veo 3 Ultra 45000 Credit", 96000, "BHF", "Veo3, AI Tools");
-  insertProduct.run("Add Farm Ultra + 30TB (5K Credit - BH 30D)", 414000, "BHF", "Farm, AI Tools");
+const orderSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+  status: String,
+  createdAt: { type: Date, default: Date.now },
+  completedAt: Date,
+  deliveredData: String
+});
+const Order = mongoose.model("Order", orderSchema);
 
-  // Design & Video
-  insertProduct.run("CapCut Pro 35 Ngày", 16000, "BHF", "CapCut, Design & Video");
-  insertProduct.run("CapCut Pro Team 11-12 Tháng", 253000, "BHF", "CapCut, Design & Video");
-  insertProduct.run("Canva Pro Chính Chủ 1 Tháng", 26000, "BHF", "Canva, Design & Video");
-  insertProduct.run("Canva Pro Chính Chủ 6 Tháng", 59000, "BHF", "Canva, Design & Video");
-  insertProduct.run("Canva Pro Chính Chủ 12 Tháng", 96000, "BHF", "Canva, Design & Video");
-  insertProduct.run("Admin Canva Pro 500 Slot (3 Năm)", 204000, "BHF", "Canva, Design & Video");
-  insertProduct.run("Adobe Creative 3 Tháng (KBH)", 60000, "KBH", "Adobe, Design & Video");
-  insertProduct.run("Adobe Full App Dùng Riêng 4 Tháng", 102000, "BHF", "Adobe, Design & Video");
-  insertProduct.run("Meitu SVIP 7 Ngày", 30000, "BHF", "Meitu, Design & Video");
-  insertProduct.run("Meitu SVIP 1 Tháng", 72000, "BHF", "Meitu, Design & Video");
-  insertProduct.run("Wink VIP 1 Tháng", 84000, "BHF", "Wink, Design & Video");
-  insertProduct.run("Beautycam VIP (Log 1 TB)", 132000, "BHF", "Beautycam, Design & Video");
-  insertProduct.run("Xingtu SVIP 1 Tháng", 138000, "BHF", "Xingtu, Design & Video");
+// --- SEED DATA (Chỉ chạy nếu DB trống) ---
+async function seedData() {
+  const count = await User.countDocuments();
+  if (count === 0) {
+    console.log("Đang khởi tạo dữ liệu mẫu...");
+    const hashedPassword = await bcrypt.hash('password123', 10);
+    await User.create({ username: "demo_user", email: "demo@example.com", password: hashedPassword, balance: 1000000, role: "admin" });
 
-  // Entertainment
-  insertProduct.run("YouTube Premium 1 Tháng", 52000, "BHF", "YouTube, Entertainment");
-  insertProduct.run("YouTube Premium 3 Tháng", 96000, "BHF", "YouTube, Entertainment");
-  insertProduct.run("YouTube Premium 6 Tháng", 180000, "BHF", "YouTube, Entertainment");
-  insertProduct.run("YouTube Premium 12 Tháng", 265000, "BHF", "YouTube, Entertainment");
-  insertProduct.run("Netflix Dùng Chung Cấp Acc 1 Tháng", 55000, "BHF", "Netflix, Entertainment");
-  insertProduct.run("Netflix Slot Riêng 1 Tháng", 101000, "BHF", "Netflix, Entertainment");
-  insertProduct.run("Netflix Extra 1 Tháng (TK Riêng Tư)", 160000, "BHF", "Netflix, Entertainment");
-  insertProduct.run("Netflix Premium 4K 1 Tháng (Slot Riêng Đổi Tên/PIN)", 140000, "BHF", "Netflix, Entertainment");
-  insertProduct.run("Netflix Premium 4K 3 Tháng", 269000, "BHF", "Netflix, Entertainment");
-  insertProduct.run("Netflix Premium 4K 3 Tháng (Slot Riêng Đổi Tên/PIN)", 396000, "BHF", "Netflix, Entertainment");
-  insertProduct.run("Netflix Premium 4K 6 Tháng", 503000, "BHF", "Netflix, Entertainment");
-  insertProduct.run("Netflix Premium 4K 6 Tháng (Slot Riêng Đổi Tên/PIN)", 781000, "BHF", "Netflix, Entertainment");
-  insertProduct.run("Netflix Premium 4K 12 Tháng", 969000, "BHF", "Netflix, Entertainment");
-  insertProduct.run("Netflix Premium 4K 12 Tháng (Slot Riêng Đổi Tên/PIN)", 1543000, "BHF", "Netflix, Entertainment");
+    const productsData = [
+      // AI Tools
+      { name: "Supper Grok Acc Cấp 1 Tháng", basePrice: 240000, warrantyType: "BHF", keywords: "Grok, AI Tools" },
+      { name: "Supper Grok Active Chính Chủ 1 Tháng", basePrice: 265000, warrantyType: "BHF", keywords: "Grok, AI Tools" },
+      { name: "Code Perplexity Pro 1 Năm (KBH)", basePrice: 84000, warrantyType: "KBH", keywords: "Perplexity, AI Tools" },
+      { name: "Acc Perplexity Pro 1 Năm (KBH)", basePrice: 96000, warrantyType: "KBH", keywords: "Perplexity, AI Tools" },
+      { name: "Gemini Pro & Veo 3 1 Năm (Kèm Drive 2TB - KBH)", basePrice: 84000, warrantyType: "KBH", keywords: "Gemini, Veo3, AI Tools" },
+      { name: "Chat GPT Plus 1 Tháng (KBH)", basePrice: 20000, warrantyType: "KBH", keywords: "ChatGPT, AI Tools" },
+      { name: "Slot Add GPT Team 1 Tháng (KBH)", basePrice: 39000, warrantyType: "KBH", keywords: "ChatGPT, AI Tools" },
+      { name: "Chat GPT Plus Acc Cấp 1 Tháng (BHF)", basePrice: 60000, warrantyType: "BHF", keywords: "ChatGPT, AI Tools" },
+      { name: "Chat GPT Plus Dịch Vụ Pay Lại Acc Cũ 1 Tháng (KBH)", basePrice: 72000, warrantyType: "KBH", keywords: "ChatGPT, AI Tools" },
+      { name: "Chat GPT Plus Dịch Vụ Pay Lại Acc Cũ 1 Tháng (BHF)", basePrice: 192000, warrantyType: "BHF", keywords: "ChatGPT, AI Tools" },
+      { name: "Chat GPT Go 12 Tháng (Chính Chủ - KBH)", basePrice: 156000, warrantyType: "KBH", keywords: "ChatGPT, AI Tools" },
+      { name: "Kling AI 1100 Credit (KBH)", basePrice: 120000, warrantyType: "KBH", keywords: "Kling, AI Tools" },
+      { name: "Veo 3 Ultra 45000 Credit", basePrice: 96000, warrantyType: "BHF", keywords: "Veo3, AI Tools" },
+      { name: "Add Farm Ultra + 30TB (5K Credit - BH 30D)", basePrice: 414000, warrantyType: "BHF", keywords: "Farm, AI Tools" },
+      // Design & Video
+      { name: "CapCut Pro 35 Ngày", basePrice: 16000, warrantyType: "BHF", keywords: "CapCut, Design & Video" },
+      { name: "CapCut Pro Team 11-12 Tháng", basePrice: 253000, warrantyType: "BHF", keywords: "CapCut, Design & Video" },
+      { name: "Canva Pro Chính Chủ 1 Tháng", basePrice: 26000, warrantyType: "BHF", keywords: "Canva, Design & Video" },
+      { name: "Canva Pro Chính Chủ 6 Tháng", basePrice: 59000, warrantyType: "BHF", keywords: "Canva, Design & Video" },
+      { name: "Canva Pro Chính Chủ 12 Tháng", basePrice: 96000, warrantyType: "BHF", keywords: "Canva, Design & Video" },
+      { name: "Admin Canva Pro 500 Slot (3 Năm)", basePrice: 204000, warrantyType: "BHF", keywords: "Canva, Design & Video" },
+      { name: "Adobe Creative 3 Tháng (KBH)", basePrice: 60000, warrantyType: "KBH", keywords: "Adobe, Design & Video" },
+      { name: "Adobe Full App Dùng Riêng 4 Tháng", basePrice: 102000, warrantyType: "BHF", keywords: "Adobe, Design & Video" },
+      { name: "Meitu SVIP 7 Ngày", basePrice: 30000, warrantyType: "BHF", keywords: "Meitu, Design & Video" },
+      { name: "Meitu SVIP 1 Tháng", basePrice: 72000, warrantyType: "BHF", keywords: "Meitu, Design & Video" },
+      { name: "Wink VIP 1 Tháng", basePrice: 84000, warrantyType: "BHF", keywords: "Wink, Design & Video" },
+      { name: "Beautycam VIP (Log 1 TB)", basePrice: 132000, warrantyType: "BHF", keywords: "Beautycam, Design & Video" },
+      { name: "Xingtu SVIP 1 Tháng", basePrice: 138000, warrantyType: "BHF", keywords: "Xingtu, Design & Video" },
+      // Entertainment
+      { name: "YouTube Premium 1 Tháng", basePrice: 52000, warrantyType: "BHF", keywords: "YouTube, Entertainment" },
+      { name: "YouTube Premium 3 Tháng", basePrice: 96000, warrantyType: "BHF", keywords: "YouTube, Entertainment" },
+      { name: "YouTube Premium 6 Tháng", basePrice: 180000, warrantyType: "BHF", keywords: "YouTube, Entertainment" },
+      { name: "YouTube Premium 12 Tháng", basePrice: 265000, warrantyType: "BHF", keywords: "YouTube, Entertainment" },
+      { name: "Netflix Dùng Chung Cấp Acc 1 Tháng", basePrice: 55000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      { name: "Netflix Slot Riêng 1 Tháng", basePrice: 101000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      { name: "Netflix Extra 1 Tháng (TK Riêng Tư)", basePrice: 160000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      { name: "Netflix Premium 4K 1 Tháng (Slot Riêng Đổi Tên/PIN)", basePrice: 140000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      { name: "Netflix Premium 4K 3 Tháng", basePrice: 269000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      { name: "Netflix Premium 4K 3 Tháng (Slot Riêng Đổi Tên/PIN)", basePrice: 396000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      { name: "Netflix Premium 4K 6 Tháng", basePrice: 503000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      { name: "Netflix Premium 4K 6 Tháng (Slot Riêng Đổi Tên/PIN)", basePrice: 781000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      { name: "Netflix Premium 4K 12 Tháng", basePrice: 969000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      { name: "Netflix Premium 4K 12 Tháng (Slot Riêng Đổi Tên/PIN)", basePrice: 1543000, warrantyType: "BHF", keywords: "Netflix, Entertainment" },
+      // VPN & Proxy
+      { name: "Nord VPN 1 Năm 1 Thiết Bị", basePrice: 156000, warrantyType: "BHF", keywords: "Nord, VPN & Proxy" },
+      { name: "Nord VPN 1 Năm 3 Thiết Bị", basePrice: 240000, warrantyType: "BHF", keywords: "Nord, VPN & Proxy" },
+      { name: "Surfshark VPN Hạn 4-7 Ngày", basePrice: 21000, warrantyType: "BHF", keywords: "Surfshark, VPN & Proxy" },
+      { name: "Surfshark VPN 2 Tháng", basePrice: 169000, warrantyType: "BHF", keywords: "Surfshark, VPN & Proxy" },
+      { name: "HMA 5 Thiết Bị (PC/Android - 28-30 Ngày)", basePrice: 20000, warrantyType: "BHF", keywords: "HMA, VPN & Proxy" },
+      { name: "HMA 5 Thiết Bị (PC/Android/iOS - 28-30 Ngày)", basePrice: 33000, warrantyType: "BHF", keywords: "HMA, VPN & Proxy" },
+      { name: "PIA VPN 5 Thiết Bị Hạn 4-7 Ngày", basePrice: 26000, warrantyType: "BHF", keywords: "PIA, VPN & Proxy" },
+      { name: "Express VPN Hạn 27-32 Ngày (8 Thiết Bị)", basePrice: 18000, warrantyType: "BHF", keywords: "Express, VPN & Proxy" },
+      { name: "Express VPN 3 Tháng", basePrice: 85000, warrantyType: "BHF", keywords: "Express, VPN & Proxy" },
+      { name: "Express VPN 6 Tháng", basePrice: 156000, warrantyType: "BHF", keywords: "Express, VPN & Proxy" },
+      { name: "9 Proxy 100 IP (VIP)", basePrice: 226000, warrantyType: "BHF", keywords: "Proxy, VPN & Proxy" },
+      // Marketing & Social
+      { name: "Gmail New Trắng (Ngâm 8-9 Ngày)", basePrice: 20000, warrantyType: "BHF", keywords: "Gmail, Marketing & Social" },
+      { name: "Gmail Old 2006-2012", basePrice: 34000, warrantyType: "BHF", keywords: "Gmail, Marketing & Social" },
+      { name: "Nhóm Chat Zalo 950-1000 TV", basePrice: 173000, warrantyType: "BHF", keywords: "Zalo, Marketing & Social" },
+      { name: "Nhóm Chat Zalo 1800-2000 TV", basePrice: 216000, warrantyType: "BHF", keywords: "Zalo, Marketing & Social" },
+      { name: "Tài Khoản Trao Đổi Sub 1M Xu", basePrice: 26000, warrantyType: "BHF", keywords: "Traodoisub, Marketing & Social" },
+      { name: "Tài Khoản Trao Đổi Sub 2M Xu", basePrice: 49000, warrantyType: "BHF", keywords: "Traodoisub, Marketing & Social" },
+      { name: "Tài Khoản Trao Đổi Sub 5M Xu", basePrice: 113000, warrantyType: "BHF", keywords: "Traodoisub, Marketing & Social" },
+      { name: "Tài Khoản Trao Đổi Sub 10M Xu", basePrice: 226000, warrantyType: "BHF", keywords: "Traodoisub, Marketing & Social" },
+      { name: "TikTok Việt Ngâm 2000-2500 Follow", basePrice: 132000, warrantyType: "BHF", keywords: "TikTok, Marketing & Social" },
+      { name: "TikTok Việt Sẵn Full Chức Năng (Live, PK, Thoại)", basePrice: 180000, warrantyType: "BHF", keywords: "TikTok, Marketing & Social" },
+      { name: "TikTok Việt 1000-1500 Follow", basePrice: 180000, warrantyType: "BHF", keywords: "TikTok, Marketing & Social" },
+      { name: "GPM Login Key Bản Quyền (Bảo Hành 3 Năm)", basePrice: 828000, warrantyType: "BHF", keywords: "GPM, Marketing & Social" }
+    ];
 
-  // VPN & Proxy
-  insertProduct.run("Nord VPN 1 Năm 1 Thiết Bị", 156000, "BHF", "Nord, VPN & Proxy");
-  insertProduct.run("Nord VPN 1 Năm 3 Thiết Bị", 240000, "BHF", "Nord, VPN & Proxy");
-  insertProduct.run("Surfshark VPN Hạn 4-7 Ngày", 21000, "BHF", "Surfshark, VPN & Proxy");
-  insertProduct.run("Surfshark VPN 2 Tháng", 169000, "BHF", "Surfshark, VPN & Proxy");
-  insertProduct.run("HMA 5 Thiết Bị (PC/Android - 28-30 Ngày)", 20000, "BHF", "HMA, VPN & Proxy");
-  insertProduct.run("HMA 5 Thiết Bị (PC/Android/iOS - 28-30 Ngày)", 33000, "BHF", "HMA, VPN & Proxy");
-  insertProduct.run("PIA VPN 5 Thiết Bị Hạn 4-7 Ngày", 26000, "BHF", "PIA, VPN & Proxy");
-  insertProduct.run("Express VPN Hạn 27-32 Ngày (8 Thiết Bị)", 18000, "BHF", "Express, VPN & Proxy");
-  insertProduct.run("Express VPN 3 Tháng", 85000, "BHF", "Express, VPN & Proxy");
-  insertProduct.run("Express VPN 6 Tháng", 156000, "BHF", "Express, VPN & Proxy");
-  insertProduct.run("9 Proxy 100 IP (VIP)", 226000, "BHF", "Proxy, VPN & Proxy");
-
-  // Marketing & Social
-  insertProduct.run("Gmail New Trắng (Ngâm 8-9 Ngày)", 20000, "BHF", "Gmail, Marketing & Social");
-  insertProduct.run("Gmail Old 2006-2012", 34000, "BHF", "Gmail, Marketing & Social");
-  insertProduct.run("Nhóm Chat Zalo 950-1000 TV", 173000, "BHF", "Zalo, Marketing & Social");
-  insertProduct.run("Nhóm Chat Zalo 1800-2000 TV", 216000, "BHF", "Zalo, Marketing & Social");
-  insertProduct.run("Tài Khoản Trao Đổi Sub 1M Xu", 26000, "BHF", "Traodoisub, Marketing & Social");
-  insertProduct.run("Tài Khoản Trao Đổi Sub 2M Xu", 49000, "BHF", "Traodoisub, Marketing & Social");
-  insertProduct.run("Tài Khoản Trao Đổi Sub 5M Xu", 113000, "BHF", "Traodoisub, Marketing & Social");
-  insertProduct.run("Tài Khoản Trao Đổi Sub 10M Xu", 226000, "BHF", "Traodoisub, Marketing & Social");
-  insertProduct.run("TikTok Việt Ngâm 2000-2500 Follow", 132000, "BHF", "TikTok, Marketing & Social");
-  insertProduct.run("TikTok Việt Sẵn Full Chức Năng (Live, PK, Thoại)", 180000, "BHF", "TikTok, Marketing & Social");
-  insertProduct.run("TikTok Việt 1000-1500 Follow", 180000, "BHF", "TikTok, Marketing & Social");
-  insertProduct.run("GPM Login Key Bản Quyền (Bảo Hành 3 Năm)", 828000, "BHF", "GPM, Marketing & Social");
-
-  const insertInventory = db.prepare("INSERT INTO inventory (product_id, data) VALUES (?, ?)");
-  // Add some inventory
-  for (let i = 1; i <= 50; i++) {
-    for (let j = 0; j < 5; j++) {
-      insertInventory.run(i, `account${i}_${j}@example.com|password123`);
+    const insertedProducts = await Product.insertMany(productsData);
+    
+    // Add inventory
+    const inventoryItems = [];
+    for (let p of insertedProducts) {
+      for (let j = 0; j < 5; j++) {
+        inventoryItems.push({ productId: p._id, data: `account_${p._id.toString().substring(0,4)}_${j}@example.com|password123` });
+      }
     }
+    await Inventory.insertMany(inventoryItems);
+    console.log("✅ Đã khởi tạo dữ liệu mẫu thành công!");
   }
 }
+seedData();
 
-// --- SSE (Server-Sent Events) Setup ---
+// --- SSE Setup ---
 const sseEmitter = new EventEmitter();
 
 app.get("/api/sse/:userId", (req, res) => {
@@ -159,298 +164,187 @@ app.get("/api/sse/:userId", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  const listener = (data: any) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-
+  const listener = (data: any) => res.write(`data: ${JSON.stringify(data)}\n\n`);
   sseEmitter.on(`user_${userId}`, listener);
-
-  req.on("close", () => {
-    sseEmitter.off(`user_${userId}`, listener);
-  });
+  req.on("close", () => sseEmitter.off(`user_${userId}`, listener));
 });
 
-// --- API Routes ---
+// --- API ROUTES ---
 
-import bcrypt from 'bcrypt';
-import nodemailer from 'nodemailer';
-import crypto from 'crypto';
-
-// Auth Routes
+// Auth
 app.post("/api/auth/register", async (req, res) => {
   const { username, email, password } = req.body;
-  if (!username || !email || !password) {
-    return res.status(400).json({ success: false, message: "Vui lòng nhập đầy đủ thông tin" });
-  }
-  if (username.includes(" ")) {
-    return res.status(400).json({ success: false, message: "Tên đăng nhập không được chứa khoảng trắng" });
-  }
+  if (!username || !email || !password) return res.status(400).json({ success: false, message: "Vui lòng nhập đầy đủ" });
+  if (username.includes(" ")) return res.status(400).json({ success: false, message: "Username không được chứa khoảng trắng" });
 
   try {
+    const existing = await User.findOne({ $or: [{ username }, { email }] });
+    if (existing) return res.status(400).json({ success: false, message: "Tên đăng nhập hoặc Email đã tồn tại" });
+
     const hashedPassword = await bcrypt.hash(password, 10);
-    const result = db.prepare("INSERT INTO users (username, email, password) VALUES (?, ?, ?)").run(username, email, hashedPassword);
-    const user = db.prepare("SELECT id, username, email, balance FROM users WHERE id = ?").get(result.lastInsertRowid);
-    res.json({ success: true, user });
-  } catch (error: any) {
-    if (error.message.includes("UNIQUE constraint failed")) {
-      return res.status(400).json({ success: false, message: "Tên đăng nhập hoặc Email đã tồn tại" });
-    }
+    const user = await User.create({ username, email, password: hashedPassword });
+    const { password: _, ...userWithoutPass } = user.toObject();
+    res.json({ success: true, user: userWithoutPass });
+  } catch (error) {
     res.status(500).json({ success: false, message: "Lỗi hệ thống" });
   }
 });
 
 app.post("/api/auth/login", async (req, res) => {
   const { identifier, password } = req.body;
-  if (!identifier || !password) {
-    return res.status(400).json({ success: false, message: "Vui lòng nhập đầy đủ thông tin" });
+  const user = await User.findOne({ $or: [{ username: identifier }, { email: identifier }] });
+  
+  if (!user || !(await bcrypt.compare(password, user.password))) {
+    return res.status(400).json({ success: false, message: "Tài khoản hoặc mật khẩu không chính xác" });
   }
 
-  const user = db.prepare("SELECT * FROM users WHERE username = ? OR email = ?").get(identifier, identifier) as any;
-  if (!user) {
-    return res.status(400).json({ success: false, message: "Tài khoản không tồn tại" });
-  }
-
-  const isValid = await bcrypt.compare(password, user.password);
-  if (!isValid) {
-    return res.status(400).json({ success: false, message: "Mật khẩu không chính xác" });
-  }
-
-  const { password: _, ...userWithoutPassword } = user;
-  res.json({ success: true, user: userWithoutPassword });
+  const { password: _, ...userWithoutPass } = user.toObject();
+  res.json({ success: true, user: userWithoutPass });
 });
 
-// Nodemailer setup
+// Forgot Password
 const transporter = nodemailer.createTransport({
   service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER || 'demo@example.com',
-    pass: process.env.EMAIL_PASS || 'password'
-  }
+  auth: { user: process.env.EMAIL_USER || 'demo@example.com', pass: process.env.EMAIL_PASS || 'password' }
 });
 
 app.post("/api/auth/forgot-password", async (req, res) => {
   const { email } = req.body;
-  const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email) as any;
-  
-  if (!user) {
-    return res.status(400).json({ success: false, message: "Email không tồn tại trong hệ thống" });
-  }
+  const user = await User.findOne({ email });
+  if (!user) return res.status(400).json({ success: false, message: "Email không tồn tại" });
 
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 minutes
-
-  db.prepare("INSERT INTO otps (user_id, otp, expires_at) VALUES (?, ?, ?)").run(user.id, otp, expiresAt);
-
-  const mailOptions = {
-    from: '"DigiHub" <noreply@digihub.vn>',
-    to: email,
-    subject: '[DigiHub] Mã khôi phục tài khoản của bạn',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-w: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-        <h2 style="color: #4f46e5; text-align: center;">Khôi phục mật khẩu</h2>
-        <p>Chào <strong>${user.username}</strong>,</p>
-        <p>Bạn vừa yêu cầu khôi phục mật khẩu tại DigiHub. Dưới đây là mã xác nhận (OTP) của bạn:</p>
-        <div style="background-color: #f3f4f6; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
-          <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #1f2937;">${otp}</span>
-        </div>
-        <p style="color: #ef4444; font-size: 14px; text-align: center;">Mã này sẽ hết hạn sau 5 phút.</p>
-        <p>Nếu bạn không yêu cầu khôi phục mật khẩu, vui lòng bỏ qua email này.</p>
-        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
-        <p style="font-size: 12px; color: #6b7280; text-align: center;">© 2026 DigiHub. All rights reserved.</p>
-      </div>
-    `
-  };
+  await Otp.create({ userId: user._id, otp, expiresAt: new Date(Date.now() + 5 * 60 * 1000) });
 
   try {
-    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-      await transporter.sendMail(mailOptions);
-      console.log("Sent OTP to", email);
+    if (process.env.EMAIL_USER) {
+      await transporter.sendMail({
+        from: '"DigiHub" <noreply@digihub.vn>', to: email, subject: '[DigiHub] Mã khôi phục tài khoản',
+        html: `<h2>Mã OTP của bạn là: <strong>${otp}</strong></h2><p>Hết hạn sau 5 phút.</p>`
+      });
     } else {
-      console.log("Sending OTP to", email, ":", otp); // Mocking email send for preview
+      console.log("Preview OTP cho", email, ":", otp);
     }
-    res.json({ success: true, message: "Mã OTP đã được gửi đến email của bạn" });
+    res.json({ success: true, message: "Đã gửi OTP" });
   } catch (error) {
-    console.error("Error sending email:", error);
-    res.status(500).json({ success: false, message: "Lỗi khi gửi email" });
+    res.status(500).json({ success: false, message: "Lỗi gửi email" });
   }
 });
 
 app.post("/api/auth/reset-password", async (req, res) => {
   const { email, otp, newPassword } = req.body;
-  
-  const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email) as any;
-  if (!user) {
-    return res.status(400).json({ success: false, message: "Email không tồn tại" });
-  }
+  const user = await User.findOne({ email });
+  if (!user) return res.status(400).json({ success: false, message: "Email không tồn tại" });
 
-  const otpRecord = db.prepare("SELECT * FROM otps WHERE user_id = ? AND otp = ? AND expires_at > CURRENT_TIMESTAMP ORDER BY id DESC LIMIT 1").get(user.id, otp) as any;
-  
-  if (!otpRecord) {
-    return res.status(400).json({ success: false, message: "Mã OTP không hợp lệ hoặc đã hết hạn" });
-  }
+  const otpRecord = await Otp.findOne({ userId: user._id, otp, expiresAt: { $gt: new Date() } }).sort({ _id: -1 });
+  if (!otpRecord) return res.status(400).json({ success: false, message: "OTP không hợp lệ hoặc hết hạn" });
 
-  const hashedPassword = await bcrypt.hash(newPassword, 10);
-  db.prepare("UPDATE users SET password = ? WHERE id = ?").run(hashedPassword, user.id);
-  db.prepare("DELETE FROM otps WHERE user_id = ?").run(user.id);
+  user.password = await bcrypt.hash(newPassword, 10);
+  await user.save();
+  await Otp.deleteMany({ userId: user._id });
 
   res.json({ success: true, message: "Đổi mật khẩu thành công" });
 });
 
-// Get current user (mock auth)
-app.get("/api/user", (req, res) => {
-  const user = db.prepare("SELECT * FROM users WHERE username = ?").get("demo_user");
+// User & Admin APIs
+app.get("/api/user", async (req, res) => {
+  // Mock cho auth hiện tại
+  const user = await User.findOne({ username: "demo_user" }).select("-password");
   res.json(user);
 });
 
-// Get all users (for admin)
-app.get("/api/users", (req, res) => {
-  try {
-    const users = db.prepare("SELECT id, username, email, balance, role, created_at FROM users ORDER BY created_at DESC").all();
-    res.json({ success: true, users });
-  } catch (error) {
-    console.error("Error fetching users:", error);
-    res.status(500).json({ success: false, message: "Lỗi máy chủ" });
-  }
+app.get("/api/users", async (req, res) => {
+  const users = await User.find().select("-password").sort({ createdAt: -1 });
+  res.json({ success: true, users });
 });
 
-// Update user (for admin)
-app.put("/api/users/:id", (req, res) => {
-  const { id } = req.params;
-  const { role, balance } = req.body;
-  try {
-    db.prepare("UPDATE users SET role = ?, balance = ? WHERE id = ?").run(role, balance, id);
-    res.json({ success: true, message: "Cập nhật người dùng thành công" });
-  } catch (error) {
-    console.error("Error updating user:", error);
-    res.status(500).json({ success: false, message: "Lỗi máy chủ" });
-  }
-});
-
-// Delete user (for admin)
-app.delete("/api/users/:id", (req, res) => {
-  const { id } = req.params;
-  try {
-    db.prepare("DELETE FROM users WHERE id = ?").run(id);
-    res.json({ success: true, message: "Xóa người dùng thành công" });
-  } catch (error) {
-    console.error("Error deleting user:", error);
-    res.status(500).json({ success: false, message: "Lỗi máy chủ" });
-  }
-});
-
-// Get products with stock
-app.get("/api/products", (req, res) => {
-  const products = db.prepare(`
-    SELECT p.*, (SELECT COUNT(*) FROM inventory i WHERE i.product_id = p.id AND i.is_used = 0) as stock
-    FROM products p
-  `).all();
+// Products & Inventory
+app.get("/api/products", async (req, res) => {
+  const products = await Product.aggregate([
+    {
+      $lookup: {
+        from: "inventories",
+        localField: "_id",
+        foreignField: "productId",
+        pipeline: [{ $match: { isUsed: false } }],
+        as: "stockItems"
+      }
+    },
+    { $addFields: { stock: { $size: "$stockItems" }, id: "$_id" } },
+    { $project: { stockItems: 0 } }
+  ]);
   res.json(products);
 });
 
-// Webhook for Auto-Recharge
-app.post("/api/recharge/webhook", (req, res) => {
-  const { content, amount } = req.body; // e.g., content: "NAPTIEN 1"
-  
-  const match = content.match(/NAPTIEN\s+(\d+)/i);
+// Orders & Payment
+app.post("/api/recharge/webhook", async (req, res) => {
+  const { content, amount } = req.body;
+  const match = content.match(/NAPTIEN\s+(\w+)/i);
   if (match && amount > 0) {
-    const userId = parseInt(match[1]);
-    
-    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+    const user = await User.findById(match[1]);
     if (user) {
-      db.prepare("UPDATE users SET balance = balance + ? WHERE id = ?").run(amount, userId);
-      
-      // Notify UI via SSE
-      sseEmitter.emit(`user_${userId}`, { type: "RECHARGE_SUCCESS", amount, newBalance: (user as any).balance + amount });
-      
+      user.balance += amount;
+      await user.save();
+      sseEmitter.emit(`user_${user._id}`, { type: "RECHARGE_SUCCESS", amount, newBalance: user.balance });
       return res.json({ success: true, message: "Recharge successful" });
     }
   }
-  res.status(400).json({ success: false, message: "Invalid syntax or user not found" });
+  res.status(400).json({ success: false, message: "Invalid syntax" });
 });
 
-// Create Order
-app.post("/api/orders", (req, res) => {
+app.post("/api/orders", async (req, res) => {
   const { userId, productId, price } = req.body;
-
-  const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
-  if (!user || user.balance < price) {
-    return res.status(400).json({ success: false, message: "Insufficient balance" });
-  }
-
-  const stock = db.prepare("SELECT COUNT(*) as count FROM inventory WHERE product_id = ? AND is_used = 0").get(productId) as any;
-  if (stock.count === 0) {
-    return res.status(400).json({ success: false, message: "Out of stock" });
-  }
-
-  // Deduct balance
-  db.prepare("UPDATE users SET balance = balance - ? WHERE id = ?").run(price, userId);
   
-  // Create Pending Order
-  const result = db.prepare("INSERT INTO orders (user_id, product_id, status) VALUES (?, ?, ?)").run(userId, productId, "Pending");
-  const orderId = result.lastInsertRowid;
+  const user = await User.findById(userId);
+  if (!user || user.balance < price) return res.status(400).json({ success: false, message: "Số dư không đủ" });
 
-  // Notify UI of new balance
-  sseEmitter.emit(`user_${userId}`, { type: "BALANCE_UPDATE", newBalance: user.balance - price });
+  const inventoryItem = await Inventory.findOne({ productId, isUsed: false });
+  if (!inventoryItem) return res.status(400).json({ success: false, message: "Hết hàng" });
 
-  // Simulate BullMQ Queue with random delay (1 to 5 minutes)
-  // For testing purposes, let's use 10 to 30 seconds instead of 1-5 mins so user can see it complete.
-  const delayMs = Math.floor(Math.random() * (30000 - 10000 + 1)) + 10000; 
-  
-  setTimeout(() => {
-    processOrder(orderId, productId, userId);
-  }, delayMs);
+  user.balance -= price;
+  await user.save();
 
-  res.json({ success: true, orderId, delayMs });
+  const order = await Order.create({ userId, productId, status: "Pending" });
+  sseEmitter.emit(`user_${userId}`, { type: "BALANCE_UPDATE", newBalance: user.balance });
+
+  // Delay ngắn cho Vercel (khoảng 3-5 giây)
+  setTimeout(async () => {
+    const inv = await Inventory.findOneAndUpdate({ _id: inventoryItem._id, isUsed: false }, { isUsed: true });
+    if (inv) {
+      order.status = "Completed";
+      order.completedAt = new Date();
+      order.deliveredData = inv.data;
+      await order.save();
+      sseEmitter.emit(`user_${userId}`, { type: "ORDER_COMPLETED", orderId: order._id });
+    } else {
+      order.status = "Failed - Out of Stock";
+      await order.save();
+    }
+  }, 3000);
+
+  res.json({ success: true, orderId: order._id, delayMs: 3000 });
 });
 
-// Worker logic
-function processOrder(orderId: number | bigint, productId: number, userId: number) {
-  const inventoryItem = db.prepare("SELECT * FROM inventory WHERE product_id = ? AND is_used = 0 LIMIT 1").get(productId) as any;
-  
-  if (inventoryItem) {
-    db.prepare("UPDATE inventory SET is_used = 1 WHERE id = ?").run(inventoryItem.id);
-    db.prepare("UPDATE orders SET status = ?, completed_at = CURRENT_TIMESTAMP, delivered_data = ? WHERE id = ?").run("Completed", inventoryItem.data, orderId);
-    
-    sseEmitter.emit(`user_${userId}`, { type: "ORDER_COMPLETED", orderId });
-  } else {
-    // Handle edge case where stock ran out during delay
-    db.prepare("UPDATE orders SET status = ? WHERE id = ?").run("Failed - Out of Stock", orderId);
-    // Refund logic could go here
-    sseEmitter.emit(`user_${userId}`, { type: "ORDER_FAILED", orderId });
-  }
-}
-
-// Get User Orders
-app.get("/api/orders/:userId", (req, res) => {
-  const orders = db.prepare(`
-    SELECT o.*, p.name as product_name 
-    FROM orders o 
-    JOIN products p ON o.product_id = p.id 
-    WHERE o.user_id = ? 
-    ORDER BY o.created_at DESC
-  `).all(req.params.userId);
-  res.json(orders);
+app.get("/api/orders/:userId", async (req, res) => {
+  const orders = await Order.find({ userId: req.params.userId }).populate("productId", "name").sort({ createdAt: -1 }).lean();
+  const formattedOrders = orders.map(o => ({
+    ...o,
+    id: o._id,
+    product_name: (o.productId as any)?.name
+  }));
+  res.json(formattedOrders);
 });
 
-// --- Vite Middleware ---
+// --- VITE CẤU HÌNH (Chỉ chạy ở môi trường DEV) ---
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Server dev chạy tại http://localhost:${PORT}`));
   }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
 }
-
 startServer();
+
+// XUẤT APP ĐỂ VERCEL CÓ THỂ ĐỌC ĐƯỢC
+export default app;
