@@ -155,12 +155,8 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.get("/api/user", async (req, res) => {
-  try {
-    const user = await User.findOne().sort({ created_at: -1 }).select("-password");
-    res.json(formatDoc(user));
-  } catch (err) {
-    res.json(null);
-  }
+  // Trả về null để khóa giả lập. Frontend sẽ tự dùng dữ liệu từ lúc Login chuẩn.
+  res.json(null); 
 });
 
 app.get("/api/products", async (req, res) => {
